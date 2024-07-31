@@ -1,101 +1,46 @@
-import logging
-import os
-import psycopg2
-import time
-from telegram import Update, InputFile
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, UpdaterDataHandler
+import telebot
 
-# Настройка логирования
-logging.basicConfig(
-  format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-  level=logging.INFO
-)
+# Токен бота, полученный от BotFather
+TOKEN = '****'
 
-logger = logging.getLogger(__name__)
+# Путь к текстовому файлу с экспонатами
+EXHIBITS_FILE = 'exhibits.txt'
 
-# Подключение к базе данных
-def connect_db():
-  return psycopg2.connect(
-    dbname=os.getenv('DB_NAME', 'museum'),
-    user=os.getenv('DB_USER', 'your_username'),
-    password=os.getenv('DB_PASSWORD', 'your_password'),
-    host=os.getenv('DB_HOST', 'localhost'),
-    port=os.getenv('DB_PORT', '5432')
-  )
+# Создание экземпляра бота
+bot = telebot.TeleBot(TOKEN)
 
-# Обработчик команды /start
-def start(update: Update, context: CallbackContext) -> None:
-  update.message.reply_text('Привет! Отправь номер экспоната, чтобы получить аудиозапись с его описанием.')
+# Загрузка списка экспонатов из файла
+def load_exhibits():
+    exhibits = {}
+    with open(EXHIBITS_FILE, 'r', encoding='utf-8') as file:
+        for line in file:
+            parts = line.strip().split(' ')
+            if len(parts) >= 2:
+                exhibit_num = parts[0]
+                audio_file = parts[1]
+                exhibits[exhibit_num] = audio_file
+    return exhibits
 
-# Обработчик текстовых сообщений
-def handle_message(update: Update, context: CallbackContext) -> None:
-  try:
-    number = int(update.message.text)
-    conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT description, audio_path FROM exhibits WHERE number = %s", (number,))
-    result = cur.fetchone()
-    cur.close()
-    conn.close()
+# Обработчик команды /start или /help
+@bot.message_handler(commands=['start', 'help'])
+def handle_start_help(message):
+    bot.send_message(message.chat.id, "Привет! Я бот-аудиогид. Чтобы получить аудиозапись, отправь номер экспоната.")
 
-    if result:
-      description, audio_path = result
-      update.message.reply_text(description)
-      audio_file = InputFile(audio_path)
-      update.message.reply_audio(audio_file)
-    else:
-      update.message.reply_text('Экспонат с таким номером не найден.')
+# Обработчик текстовых сообщений с номером экспоната
+@bot.message_handler(func=lambda message: True)
+def handle_exhibit_request(message):
+    try:
+        exhibit_num = message.text.strip()
+        exhibits = load_exhibits()
+        if exhibit_num in exhibits:
+            audio_file = exhibits[exhibit_num]
+            audio_path = open(f'{audio_file}', 'rb')
+            bot.send_audio(message.chat.id, audio_path)
+        else:
+            bot.send_message(message.chat.id, "Экспонат не найден.")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Произошла ошибка: {str(e)}")
 
-  except ValueError:
-    update.message.reply_text('Пожалуйста, отправьте правильный номер экспоната.')
-
-  except Exception as e:
-    logger.error(f"Ошибка: {e}")
-    update.message.reply_text('Произошла ошибка при обработке запроса.')
-
-# Функция отправки запроса отзыва
-def send_feedback_request(update: Update, context: CallbackContext) -> None:
-    delay = 20 * 60  # 20 минут в секундах
-    last_request_time = context.user_data.get('last_request_time')
-
-    if time.time() - last_request_time > delay:
-        update.message.reply_text('Понравился ли вам наш музей и аудиогид? Пожалуйста, оставьте отзыв!')
-        context.user_data['last_request_time'] = time.time()
-
-# Обработка отзыва
-def handle_feedback(update: Update, context: CallbackContext) -> None:
-    # Сохранение отзыва
-    feedback = update.message.text
-    # ... (Запись отзыва в журнал) ...
-
-    # Отправка благодарности
-    update.message.reply_text('Спасибо за ваш отзыв!')
-
-    # Сброс состояния пользователя
-    context.user_data['waiting_for_feedback'] = False
-
-# Обновление контекста пользователя
-def update_user_data(update: Update, context: CallbackContext) -> None:
-    if update.message is not None:
-        context.user_data['last_request_time'] = time.time()
-        context.user_data['waiting_for_feedback'] = False
-
-def main() -> None:
-  # Получение токена бота
-  token = os.getenv('TELEGRAM_BOT_TOKEN')
-   
-  updater = Updater(token)
-   
-  dispatcher = updater.dispatcher
-
-  dispatcher.add_handler(CommandHandler("start", start))
-  dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-  dispatcher.add_handler(MessageHandler(Filters.text & context.user_data.get('waiting_for_feedback', False), handle_feedback))
-
-  updater.user_data_handler = UpdaterDataHandler(update_user_data)
-
-  updater.start_polling()
-  updater.idle()
 
 if __name__ == '__main__':
-  main()
+    bot.polling(none_stop=True)
